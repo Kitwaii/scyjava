@@ -1,23 +1,37 @@
 import atexit
 import collections.abc
-from functools import lru_cache
-import traceback
-from typing import Any, Callable, NamedTuple
-import typing
-import jgo
-import jpype
-import jpype.config
 import logging
 import os
 import re
-import scyjava.config
 import subprocess
 import sys
+import typing
+from functools import lru_cache
+from importlib import import_module
 from pathlib import Path
-from jpype.types import *
+from typing import Any, Callable, NamedTuple
+
+import jgo
+import jpype
+import jpype.config
+import scyjava.config
 from _jpype import _JObject
+from jpype.types import *
+
+import config
 
 _logger = logging.getLogger(__name__)
+
+
+# -- Bridge Mode --
+
+@lru_cache(maxsize=None)
+@property
+def bridge_mode():
+    if 'jep' in locals():
+        return True
+    else:
+        return False
 
 
 # -- JVM setup --
@@ -91,81 +105,82 @@ def jvm_version():
 
 
 def start_jvm(options=scyjava.config.get_options()):
-    """
-    Explicitly connect to the Java virtual machine (JVM). Only one JVM can
-    be active; does nothing if the JVM has already been started. Calling
-    this function directly is typically not necessary, because the first
-    time a scyjava function needing a JVM is invoked, one is started on the
-    fly with the configuration specified via the scijava.config mechanism.
+    if not bridge_mode():
+        """
+        Explicitly connect to the Java virtual machine (JVM). Only one JVM can
+        be active; does nothing if the JVM has already been started. Calling
+        this function directly is typically not necessary, because the first
+        time a scyjava function needing a JVM is invoked, one is started on the
+        fly with the configuration specified via the scijava.config mechanism.
+    
+        :param options: List of options to pass to the JVM. For example:
+                        ['-Djava.awt.headless=true', '-Xmx4g']
+        """
+        # if JVM is already running -- break
+        if jvm_started():
+            _logger.debug("The JVM is already running.")
+            return
 
-    :param options: List of options to pass to the JVM. For example:
-                    ['-Djava.awt.headless=true', '-Xmx4g']
-    """
-    # if JVM is already running -- break
-    if jvm_started():
-        _logger.debug("The JVM is already running.")
-        return
+        # retrieve endpoint and repositories from scyjava config
+        endpoints = scyjava.config.endpoints
+        repositories = scyjava.config.get_repositories()
 
-    # retrieve endpoint and repositories from scyjava config
-    endpoints = scyjava.config.endpoints
-    repositories = scyjava.config.get_repositories()
+        # use the logger to notify user that endpoints are being added
+        _logger.debug("Adding jars from endpoints {0}".format(endpoints))
 
-    # use the logger to notify user that endpoints are being added
-    _logger.debug("Adding jars from endpoints {0}".format(endpoints))
+        # get endpoints and add to JPype class path
+        if len(endpoints) > 0:
+            endpoints = endpoints[:1] + sorted(endpoints[1:])
+            _logger.debug("Using endpoints %s", endpoints)
+            _, workspace = jgo.resolve_dependencies(
+                "+".join(endpoints),
+                m2_repo=scyjava.config.get_m2_repo(),
+                cache_dir=scyjava.config.get_cache_dir(),
+                manage_dependencies=scyjava.config.get_manage_deps(),
+                repositories=repositories,
+                verbose=scyjava.config.get_verbose(),
+                shortcuts=scyjava.config.get_shortcuts(),
+            )
+            jpype.addClassPath(os.path.join(workspace, "*"))
 
-    # get endpoints and add to JPype class path
-    if len(endpoints) > 0:
-        endpoints = endpoints[:1] + sorted(endpoints[1:])
-        _logger.debug("Using endpoints %s", endpoints)
-        _, workspace = jgo.resolve_dependencies(
-            "+".join(endpoints),
-            m2_repo=scyjava.config.get_m2_repo(),
-            cache_dir=scyjava.config.get_cache_dir(),
-            manage_dependencies=scyjava.config.get_manage_deps(),
-            repositories=repositories,
-            verbose=scyjava.config.get_verbose(),
-            shortcuts=scyjava.config.get_shortcuts(),
-        )
-        jpype.addClassPath(os.path.join(workspace, "*"))
+        # HACK: Try to set JAVA_HOME if it isn't already.
+        if (
+                "JAVA_HOME" not in os.environ
+                or not os.environ["JAVA_HOME"]
+                or not os.path.isdir(os.environ["JAVA_HOME"])
+        ):
 
-    # HACK: Try to set JAVA_HOME if it isn't already.
-    if (
-        "JAVA_HOME" not in os.environ
-        or not os.environ["JAVA_HOME"]
-        or not os.path.isdir(os.environ["JAVA_HOME"])
-    ):
+            _logger.debug("JAVA_HOME not set. Will try to infer it from sys.path.")
 
-        _logger.debug("JAVA_HOME not set. Will try to infer it from sys.path.")
+            libjvm_win = Path("Library") / "jre" / "bin" / "server" / "jvm.dll"
+            libjvm_macos = Path("lib") / "server" / "libjvm.dylib"
+            libjvm_linux = Path("lib") / "server" / "libjvm.so"
+            libjvm_paths = {
+                libjvm_win: Path("Library"),
+                libjvm_macos: Path(),
+                libjvm_linux: Path(),
+            }
+            for p in sys.path:
+                if not p.endswith("site-packages"):
+                    continue
+                # e.g. $CONDA_PREFIX/lib/python3.10/site-packages -> $CONDA_PREFIX
+                # But we want it to work outside of Conda as well, theoretically.
+                base = Path(p).parent.parent.parent
+                for libjvm_path, java_home_path in libjvm_paths.items():
+                    if (base / libjvm_path).exists():
+                        java_home = str((base / java_home_path).resolve())
+                        _logger.debug(f"Detected JAVA_HOME: %s", java_home)
+                        os.environ["JAVA_HOME"] = java_home
+                        break
 
-        libjvm_win = Path("Library") / "jre" / "bin" / "server" / "jvm.dll"
-        libjvm_macos = Path("lib") / "server" / "libjvm.dylib"
-        libjvm_linux = Path("lib") / "server" / "libjvm.so"
-        libjvm_paths = {
-            libjvm_win: Path("Library"),
-            libjvm_macos: Path(),
-            libjvm_linux: Path(),
-        }
-        for p in sys.path:
-            if not p.endswith("site-packages"):
-                continue
-            # e.g. $CONDA_PREFIX/lib/python3.10/site-packages -> $CONDA_PREFIX
-            # But we want it to work outside of Conda as well, theoretically.
-            base = Path(p).parent.parent.parent
-            for libjvm_path, java_home_path in libjvm_paths.items():
-                if (base / libjvm_path).exists():
-                    java_home = str((base / java_home_path).resolve())
-                    _logger.debug(f"Detected JAVA_HOME: %s", java_home)
-                    os.environ["JAVA_HOME"] = java_home
-                    break
+        # initialize JPype JVM
+        _logger.debug("Starting JVM")
+        jpype.startJVM(*options, interrupt=True)
 
-    # initialize JPype JVM
-    _logger.debug("Starting JVM")
-    jpype.startJVM(*options, interrupt=True)
-
-    # replace JPype/JVM shutdown handling with our own
-    jpype.config.onexit = False
-    jpype.config.free_resources = False
-    atexit.register(shutdown_jvm)
+        # replace JPype/JVM shutdown handling with our own
+        jpype.config.onexit = False
+        jpype.config.free_resources = False
+        atexit.register(shutdown_jvm)
 
     # grab needed Java classes
     global Boolean
@@ -377,8 +392,14 @@ def jimport(class_name):
     :returns: A pointer to the class, which can be used to
               e.g. instantiate objects of that class.
     """
-    start_jvm()
-    return jpype.JClass(class_name)
+    if bridge_mode():
+        module_path = class_name.rsplit('.', 1)
+        module = import_module(module_path[0], module_path[1])
+
+        return getattr(module, module_path[1])
+    else:
+        start_jvm()
+        return jpype.JClass(class_name)
 
 
 def jstacktrace(exc):
@@ -505,8 +526,8 @@ def _stock_java_converters() -> typing.List[Converter]:
         # Integer converter
         Converter(
             predicate=lambda obj: isinstance(obj, int)
-            and obj <= Integer.MAX_VALUE
-            and obj >= Integer.MIN_VALUE,
+                                  and obj <= Integer.MAX_VALUE
+                                  and obj >= Integer.MIN_VALUE,
             converter=Integer,
         ),
         # Long converter
@@ -524,15 +545,15 @@ def _stock_java_converters() -> typing.List[Converter]:
         # Float converter
         Converter(
             predicate=lambda obj: isinstance(obj, float)
-            and obj <= Float.MAX_VALUE
-            and obj >= Float.MIN_VALUE,
+                                  and obj <= Float.MAX_VALUE
+                                  and obj >= Float.MIN_VALUE,
             converter=Float,
         ),
         # Double converter
         Converter(
             predicate=lambda obj: isinstance(obj, float)
-            and obj <= Double.MAX_VALUE
-            and obj >= Float.MIN_VALUE,
+                                  and obj <= Double.MAX_VALUE
+                                  and obj >= Float.MIN_VALUE,
             converter=Double,
             priority=Priority.NORMAL - 1,
         ),
@@ -703,7 +724,7 @@ class JavaMap(JavaObject, collections.abc.MutableMapping):
 
     def __str__(self):
         return (
-            "{" + ", ".join(_jstr(k) + ": " + _jstr(v) for k, v in self.items()) + "}"
+                "{" + ", ".join(_jstr(k) + ": " + _jstr(v) for k, v in self.items()) + "}"
         )
 
 

@@ -16,3 +16,7 @@
 .coverage
 .coverage.*
 coverage.xml
+
+# IDEA
+.idea/
+*.iml
