@@ -24,6 +24,7 @@ dependencies:
   - build
   - pytest
   - pytest-cov
+  - setuptools-scm
   # Project from source
   - pip
   - pip:
