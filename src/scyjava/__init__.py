@@ -105,7 +105,7 @@ def jvm_version():
 
 
 def start_jvm(options=scyjava.config.get_options()):
-    if not bridge_mode():
+    if not bridge_mode:
         """
         Explicitly connect to the Java virtual machine (JVM). Only one JVM can
         be active; does nothing if the JVM has already been started. Calling
@@ -392,7 +392,7 @@ def jimport(class_name):
     :returns: A pointer to the class, which can be used to
               e.g. instantiate objects of that class.
     """
-    if bridge_mode():
+    if bridge_mode:
         module_path = class_name.rsplit('.', 1)
         module = import_module(module_path[0], module_path[1])
 
