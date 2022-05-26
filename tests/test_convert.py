@@ -1,7 +1,7 @@
 import unittest
 
-from jpype import JArray, JInt, JLong
-from scyjava import Converter, config, jclass, jimport, start_jvm, to_java, to_python
+from jpype import JInt
+from scyjava import bridge_mode, JVMRunMode, Converter, config, jclass, jimport, start_jvm, to_java, to_python, create_array, Integer
 
 config.endpoints.append("org.scijava:scijava-table")
 config.add_option("-Djava.awt.headless=true")
@@ -56,6 +56,7 @@ class TestConvert(unittest.TestCase):
 
     def testInteger(self):
         i = 5
+
         ji = to_java(i)
         self.assertEqual(i, ji.intValue())
         pi = to_python(ji)
@@ -64,6 +65,7 @@ class TestConvert(unittest.TestCase):
 
     def testLong(self):
         l = 4000000001
+
         jl = to_java(l)
         self.assertEqual(l, jl.longValue())
         pl = to_python(jl)
@@ -72,6 +74,7 @@ class TestConvert(unittest.TestCase):
 
     def testBigInteger(self):
         bi = 9879999999999999789
+
         jbi = to_java(bi)
         self.assertEqual(bi, int(str(jbi.toString())))
         pbi = to_python(jbi)
@@ -80,6 +83,7 @@ class TestConvert(unittest.TestCase):
 
     def testFloat(self):
         f = 5.0
+
         jf = to_java(f)
         self.assertEqual(f, jf.floatValue())
         pf = to_python(jf)
@@ -89,6 +93,7 @@ class TestConvert(unittest.TestCase):
     def testDouble(self):
         Float = jimport("java.lang.Float")
         d = Float.MAX_VALUE * 2
+
         jd = to_java(d)
         self.assertEqual(d, jd.doubleValue())
         pd = to_python(jd)
@@ -97,6 +102,7 @@ class TestConvert(unittest.TestCase):
 
     def testString(self):
         s = "Hello world!"
+
         js = to_java(s)
         for e, a in zip(s, js.toCharArray()):
             self.assertEqual(e, a)
@@ -106,6 +112,7 @@ class TestConvert(unittest.TestCase):
 
     def testList(self):
         l = "The quick brown fox jumps over the lazy dogs".split()
+
         jl = to_java(l)
         for e, a in zip(l, jl):
             self.assertEqual(e, to_python(a))
@@ -127,8 +134,7 @@ class TestConvert(unittest.TestCase):
         self.assertEqual(str(s), str(ps))
 
     def testArray(self):
-        start_jvm()
-        arr = JArray(JInt)(4)
+        arr = create_array(JInt, 4) if bridge_mode == JVMRunMode.JPype else create_array(Integer, 4).toArray()
         for i in range(len(arr)):
             arr[i] = to_java(i)
         py_arr = to_python(arr)
@@ -202,7 +208,7 @@ class TestConvert(unittest.TestCase):
         Object = jimport("java.lang.Object")
         unknown_thing = Object()
         converted_thing = to_python(unknown_thing, gentle=True)
-        assert type(converted_thing) == Object
+        assert type(converted_thing) == (Object if bridge_mode == JVMRunMode.JPype else Object.__pytype__)
         bad_conversion = None
         try:
             bad_conversion = to_python(unknown_thing)

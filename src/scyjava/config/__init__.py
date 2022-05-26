@@ -125,6 +125,7 @@ def add_classpath(*path):
         foo/bar/Fubar.class inside would be another way to provide the class
         foo.bar.Fubar.
     """
+    #if scyjava.bridge_mode == JVMRunMode.JPype:
     for p in path:
         jpype.addClassPath(p)
 
@@ -146,7 +147,10 @@ def find_jars(directory):
 
 
 def get_classpath():
+    # if bridge_mode == JVMRunMode.JPype:
     return jpype.getClassPath()
+    # elif bridge_mode == JVMRunMode.JEP:
+    #     return None
 
 
 def add_option(option):

@@ -1,5 +1,6 @@
 import atexit
 import collections.abc
+import enum
 import logging
 import os
 import re
@@ -21,21 +22,17 @@ from jpype.types import *
 _logger = logging.getLogger(__name__)
 
 
-# -- Bridge Mode --
+#
+# _logger.addHandler(logging.StreamHandler(sys.stderr))
+# _logger.setLevel(logging.DEBUG)
+#
+# _logger.debug('Start Scyjava')
 
-@property
-@lru_cache(maxsize=None)
-def bridge_mode():
-    try:
-        import jep
-        return True
-    except ImportError:
-        return False
-    # if 'jep' in locals():
-    #     return True
-    # else:
-    #     return False
+# -- Running JVM list --
 
+class JVMRunMode(enum.Enum):
+    JEP = 'JEP'
+    JPype = 'JPype'
 
 # -- JVM setup --
 
@@ -61,7 +58,7 @@ def jvm_version():
     version from the environment without actually starting up the JVM in-process.
     If the version cannot be deduced, a RuntimeError with the cause is raised.
     """
-    if not bridge_mode:
+    if bridge_mode == JVMRunMode.JPype:
         jvm_version = jpype.getJVMVersion()
         if jvm_version and jvm_version[0]:
             # JPype already knew the version.
@@ -107,107 +104,83 @@ def jvm_version():
             raise RuntimeError(f"Inscrutable java command output:\n{version}")
 
         mVersion = m.group(1)
-    else:
-        from java.lang import System
+    elif bridge_mode == JVMRunMode.JEP:
+        System = jimport('java.lang.System')
         mVersion = System.getProperty('java.version')
 
     return tuple(map(int, mVersion.split(".")))
 
 
 def start_jvm(options=scyjava.config.get_options()):
-    global Boolean
-    global Byte
-    global Character
-    global Double
-    global Float
-    global Integer
-    global Iterable
-    global Long
-    global Object
-    global Short
-    global String
-    global Void
-    global BigDecimal
-    global BigInteger
-    global ArrayList
-    global Collection
-    global Iterator
-    global LinkedHashMap
-    global LinkedHashSet
-    global List
-    global Map
-    global Set
+    """
+    Explicitly connect to the Java virtual machine (JVM). Only one JVM can
+    be active; does nothing if the JVM has already been started. Calling
+    this function directly is typically not necessary, because the first
+    time a scyjava function needing a JVM is invoked, one is started on the
+    fly with the configuration specified via the scijava.config mechanism.
 
-    if not bridge_mode:
-        """
-        Explicitly connect to the Java virtual machine (JVM). Only one JVM can
-        be active; does nothing if the JVM has already been started. Calling
-        this function directly is typically not necessary, because the first
-        time a scyjava function needing a JVM is invoked, one is started on the
-        fly with the configuration specified via the scijava.config mechanism.
-    
-        :param options: List of options to pass to the JVM. For example:
-                        ['-Djava.awt.headless=true', '-Xmx4g']
-        """
-        # if JVM is already running -- break
-        if jvm_started():
-            _logger.debug("The JVM is already running.")
-            return
+    :param options: List of options to pass to the JVM. For example: ['-Djava.awt.headless=true', '-Xmx4g']
+    """
+    # if JVM is already running -- break
+    if jvm_started():
+        _logger.debug("The JVM is already running.")
+        return
 
-        # retrieve endpoint and repositories from scyjava config
-        endpoints = scyjava.config.endpoints
-        repositories = scyjava.config.get_repositories()
+    # retrieve endpoint and repositories from scyjava config
+    endpoints = scyjava.config.endpoints
+    repositories = scyjava.config.get_repositories()
 
-        # use the logger to notify user that endpoints are being added
-        _logger.debug("Adding jars from endpoints {0}".format(endpoints))
+    # use the logger to notify user that endpoints are being added
+    _logger.debug("Adding jars from endpoints {0}".format(endpoints))
 
-        # get endpoints and add to JPype class path
-        if len(endpoints) > 0:
-            endpoints = endpoints[:1] + sorted(endpoints[1:])
-            _logger.debug("Using endpoints %s", endpoints)
-            _, workspace = jgo.resolve_dependencies(
-                "+".join(endpoints),
-                m2_repo=scyjava.config.get_m2_repo(),
-                cache_dir=scyjava.config.get_cache_dir(),
-                manage_dependencies=scyjava.config.get_manage_deps(),
-                repositories=repositories,
-                verbose=scyjava.config.get_verbose(),
-                shortcuts=scyjava.config.get_shortcuts(),
-            )
-            jpype.addClassPath(os.path.join(workspace, "*"))
+    # get endpoints and add to JPype class path
+    if len(endpoints) > 0:
+        endpoints = endpoints[:1] + sorted(endpoints[1:])
+        _logger.debug("Using endpoints %s", endpoints)
+        _, workspace = jgo.resolve_dependencies(
+            "+".join(endpoints),
+            m2_repo=scyjava.config.get_m2_repo(),
+            cache_dir=scyjava.config.get_cache_dir(),
+            manage_dependencies=scyjava.config.get_manage_deps(),
+            repositories=repositories,
+            verbose=scyjava.config.get_verbose(),
+            shortcuts=scyjava.config.get_shortcuts(),
+        )
+        jpype.addClassPath(os.path.join(workspace, "*"))
 
-        # HACK: Try to set JAVA_HOME if it isn't already.
-        if (
-                "JAVA_HOME" not in os.environ
-                or not os.environ["JAVA_HOME"]
-                or not os.path.isdir(os.environ["JAVA_HOME"])
-        ):
+    # HACK: Try to set JAVA_HOME if it isn't already.
+    if (
+            "JAVA_HOME" not in os.environ
+            or not os.environ["JAVA_HOME"]
+            or not os.path.isdir(os.environ["JAVA_HOME"])
+    ):
 
-            _logger.debug("JAVA_HOME not set. Will try to infer it from sys.path.")
+        _logger.debug("JAVA_HOME not set. Will try to infer it from sys.path.")
 
-            libjvm_win = Path("Library") / "jre" / "bin" / "server" / "jvm.dll"
-            libjvm_macos = Path("lib") / "server" / "libjvm.dylib"
-            libjvm_linux = Path("lib") / "server" / "libjvm.so"
-            libjvm_paths = {
-                libjvm_win: Path("Library"),
-                libjvm_macos: Path(),
-                libjvm_linux: Path(),
-            }
-            for p in sys.path:
-                if not p.endswith("site-packages"):
-                    continue
-                # e.g. $CONDA_PREFIX/lib/python3.10/site-packages -> $CONDA_PREFIX
-                # But we want it to work outside of Conda as well, theoretically.
-                base = Path(p).parent.parent.parent
-                for libjvm_path, java_home_path in libjvm_paths.items():
-                    if (base / libjvm_path).exists():
-                        java_home = str((base / java_home_path).resolve())
-                        _logger.debug(f"Detected JAVA_HOME: %s", java_home)
-                        os.environ["JAVA_HOME"] = java_home
-                        break
+        libjvm_win = Path("Library") / "jre" / "bin" / "server" / "jvm.dll"
+        libjvm_macos = Path("lib") / "server" / "libjvm.dylib"
+        libjvm_linux = Path("lib") / "server" / "libjvm.so"
+        libjvm_paths = {
+            libjvm_win: Path("Library"),
+            libjvm_macos: Path(),
+            libjvm_linux: Path(),
+        }
+        for p in sys.path:
+            if not p.endswith("site-packages"):
+                continue
+            # e.g. $CONDA_PREFIX/lib/python3.10/site-packages -> $CONDA_PREFIX
+            # But we want it to work outside of Conda as well, theoretically.
+            base = Path(p).parent.parent.parent
+            for libjvm_path, java_home_path in libjvm_paths.items():
+                if (base / libjvm_path).exists():
+                    java_home = str((base / java_home_path).resolve())
+                    _logger.debug(f"Detected JAVA_HOME: %s", java_home)
+                    os.environ["JAVA_HOME"] = java_home
+                    break
 
-        # initialize JPype JVM
-        _logger.debug("Starting JVM")
+    # initialize JPype JVM
+    _logger.debug("Starting JVM")
+    if bridge_mode == JVMRunMode.JPype:
         jpype.startJVM(*options, interrupt=True)
 
         # replace JPype/JVM shutdown handling with our own
@@ -215,29 +188,7 @@ def start_jvm(options=scyjava.config.get_options()):
         jpype.config.free_resources = False
         atexit.register(shutdown_jvm)
 
-    # grab needed Java classes
-    Boolean = jimport("java.lang.Boolean")
-    Byte = jimport("java.lang.Byte")
-    Character = jimport("java.lang.Character")
-    Double = jimport("java.lang.Double")
-    Float = jimport("java.lang.Float")
-    Integer = jimport("java.lang.Integer")
-    Iterable = jimport("java.lang.Iterable")
-    Long = jimport("java.lang.Long")
-    Object = jimport("java.lang.Object")
-    Short = jimport("java.lang.Short")
-    String = jimport("java.lang.String")
-    Void = jimport("java.lang.Void")
-    BigDecimal = jimport("java.math.BigDecimal")
-    BigInteger = jimport("java.math.BigInteger")
-    ArrayList = jimport("java.util.ArrayList")
-    Collection = jimport("java.util.Collection")
-    Iterator = jimport("java.util.Iterator")
-    LinkedHashMap = jimport("java.util.LinkedHashMap")
-    LinkedHashSet = jimport("java.util.LinkedHashSet")
-    List = jimport("java.util.List")
-    Map = jimport("java.util.Map")
-    Set = jimport("java.util.Set")
+    _import_java_classes()
 
     # invoke registered callback functions
     for callback in _startup_callbacks:
@@ -254,7 +205,7 @@ def shutdown_jvm():
 
     Only for JPype mode like JEP is manage directly the JVM of the program
     """
-    if not bridge_mode:
+    if bridge_mode == JVMRunMode.JPype:
         # invoke registered shutdown callback functions
         for callback in _shutdown_callbacks:
             try:
@@ -272,15 +223,15 @@ def shutdown_jvm():
             jpype.shutdownJVM()
         except Exception as e:
             print(f"Exception during JVM shutdown: {e}")
-    else:
+    elif bridge_mode == JVMRunMode.JEP:
         raise RuntimeError('Scyjava is running through JEP. You do not have to close yourself the JVM')
 
 
 def jvm_started():
     """Return true iff a Java virtual machine (JVM) has been started."""
-    if not bridge_mode:
+    if bridge_mode == JVMRunMode.JPype:
         return jpype.isJVMStarted()
-    else:
+    elif bridge_mode == JVMRunMode.JPype:
         return True
 
 
@@ -360,8 +311,11 @@ class Converter(NamedTuple):
 
 
 def _convert(obj: Any, converters: typing.List[Converter]) -> Any:
+    # _logger.debug(java_converters)
     suitable_converters = filter(lambda c: c.predicate(obj), converters)
+    # _logger.debug(suitable_converters)
     prioritized = max(suitable_converters, key=lambda c: c.priority)
+    # _logger.debug(prioritized)
     return prioritized.converter(obj)
 
 
@@ -375,12 +329,19 @@ def _add_converter(converter: Converter, converters: typing.List[Converter]):
 # https://github.com/kivy/pyjnius/issues/217#issue-145981070
 
 
+def jinstance(obj, jtype):
+    if bridge_mode == JVMRunMode.JEP:
+        return isinstance(obj, jtype.__pytype__)
+    elif bridge_mode == JVMRunMode.JPype:
+        return isinstance(obj, jtype)
+
+
 def isjava(data):
     """Return whether the given data object is a Java object."""
-    if not bridge_mode:
+    if bridge_mode == JVMRunMode.JPype:
         return isinstance(data, jpype.JClass) or isinstance(data, _JObject)
-    else:
-        raise RuntimeError('Scyjava is running through JEP. It transforms Java objects to Python objects')
+    elif bridge_mode == JVMRunMode.JEP:
+        return jinstance(data, Object)
 
 
 def jclass(data):
@@ -396,17 +357,14 @@ def jclass(data):
     :returns: A java.lang.Class object, suitable for use with reflection.
     :raises TypeError: if the argument is not one of the aforementioned types.
     """
-    if not bridge_mode:
-        if isinstance(data, jpype.JClass):
-            return data.class_
-        if isinstance(data, _JObject):
-            return data.getClass()
-        if isinstance(data, str):
-            return jclass(jimport(data))
+    if isinstance(data, jpype.JClass):
+        return data.class_
+    if isinstance(data, _JObject):
+        return data.getClass()
+    if isinstance(data, str):
+        return jclass(jimport(data))
 
-        raise TypeError("Cannot glean class from data of type: " + str(type(data)))
-    else:
-        raise RuntimeError('ScyJava is running through JEP. You can directly call your object through import or jimport() function')
+    raise TypeError("Cannot glean class from data of type: " + str(type(data)))
 
 
 @lru_cache(maxsize=None)
@@ -418,12 +376,12 @@ def jimport(class_name):
     :returns: A pointer to the class, which can be used to
               e.g. instantiate objects of that class.
     """
-    if bridge_mode:
+    if bridge_mode == JVMRunMode.JEP:
         module_path = class_name.rsplit('.', 1)
         module = import_module(module_path[0], module_path[1])
 
         return getattr(module, module_path[1])
-    else:
+    elif bridge_mode == JVMRunMode.JPype:
         start_jvm()
         return jpype.JClass(class_name)
 
@@ -445,17 +403,14 @@ def jstacktrace(exc):
     :returns: A multi-line string containing the stack trace, or empty string
     if no stack trace could be extracted.
     """
-    if not bridge_mode:
-        try:
-            StringWriter = jimport("java.io.StringWriter")
-            PrintWriter = jimport("java.io.PrintWriter")
-            sw = StringWriter()
-            exc.printStackTrace(PrintWriter(sw, True))
-            return sw.toString()
-        except:
-            return ""
-    else:
-        raise RuntimeError('Scyjava is running through JEP. You can see directly your Java stack trace from your program.')
+    try:
+        StringWriter = jimport("java.io.StringWriter")
+        PrintWriter = jimport("java.io.PrintWriter")
+        sw = StringWriter()
+        exc.printStackTrace(PrintWriter(sw, True))
+        return sw.toString()
+    except:
+        return ""
 
 
 def _raise_type_exception(obj: Any):
@@ -463,37 +418,28 @@ def _raise_type_exception(obj: Any):
 
 
 def _convertMap(obj: collections.abc.Mapping):
-    if not bridge_mode:
-        jmap = LinkedHashMap()
-        for k, v in obj.items():
-            jk = to_java(k)
-            jv = to_java(v)
-            jmap.put(jk, jv)
-        return jmap
-    else:
-        raise RuntimeError('Scyjava is running through JEP. It directly converts data when you send or retrieve data.')
+    jmap = LinkedHashMap()
+    for k, v in obj.items():
+        jk = to_java(k)
+        jv = to_java(v)
+        jmap.put(jk, jv)
+    return jmap
 
 
 def _convertSet(obj: collections.abc.Set):
-    if not bridge_mode:
-        jset = LinkedHashSet()
-        for item in obj:
-            jitem = to_java(item)
-            jset.add(jitem)
-        return jset
-    else:
-        raise RuntimeError('Scyjava is running through JEP. It directly converts data when you send or retrieve data.')
+    jset = LinkedHashSet()
+    for item in obj:
+        jitem = to_java(item)
+        jset.add(jitem)
+    return jset
 
 
 def _convertIterable(obj: collections.abc.Iterable):
-    if not bridge_mode:
-        jlist = ArrayList()
-        for item in obj:
-            jitem = to_java(item)
-            jlist.add(jitem)
-        return jlist
-    else:
-        raise RuntimeError('Scyjava is running through JEP. It directly converts data when you send or retrieve data.')
+    jlist = ArrayList()
+    for item in obj:
+        jitem = to_java(item)
+        jlist.add(jitem)
+    return jlist
 
 
 java_converters: typing.List[Converter] = []
@@ -522,9 +468,8 @@ def to_java(obj: Any) -> Any:
     :returns: A corresponding Java object with the same contents.
     :raises TypeError: if the argument is not one of the aforementioned types.
     """
-    if not bridge_mode:
-        start_jvm()
-        return _convert(obj, java_converters)
+    start_jvm()
+    return _convert(obj, java_converters)
 
 
 def _stock_java_converters() -> typing.List[Converter]:
@@ -533,105 +478,92 @@ def _stock_java_converters() -> typing.List[Converter]:
     This should only be called after the JVM has been started!
     :returns: A list of Converters
     """
-    if not bridge_mode:
-        return [
-            # Other (Exceptional) converter
-            Converter(
-                predicate=lambda obj: True,
-                converter=_raise_type_exception,
-                priority=Priority.EXTREMELY_LOW - 1,
-            ),
-            # NoneType converter
-            Converter(
-                predicate=lambda obj: obj is None,
-                converter=lambda obj: None,
-                priority=Priority.EXTREMELY_HIGH + 1,
-            ),
-            # Java identity converter
-            Converter(
-                predicate=isjava,
-                converter=lambda obj: obj,
-                priority=Priority.EXTREMELY_HIGH,
-            ),
-            # String converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, str),
-                converter=lambda obj: String(obj.encode("utf-8"), "utf-8"),
-            ),
-            # Boolean converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, bool),
-                converter=Boolean,
-            ),
-            # Integer converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, int)
-                                      and obj <= Integer.MAX_VALUE
-                                      and obj >= Integer.MIN_VALUE,
-                converter=Integer,
-            ),
-            # Long converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, int) and obj <= Long.MAX_VALUE,
-                converter=Long,
-                priority=Priority.NORMAL - 1,
-            ),
-            # BigInteger converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, int),
-                converter=lambda obj: BigInteger(str(obj)),
-                priority=Priority.NORMAL - 2,
-            ),
-            # Float converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, float)
-                                      and obj <= Float.MAX_VALUE
-                                      and obj >= Float.MIN_VALUE,
-                converter=Float,
-            ),
-            # Double converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, float)
-                                      and obj <= Double.MAX_VALUE
-                                      and obj >= Float.MIN_VALUE,
-                converter=Double,
-                priority=Priority.NORMAL - 1,
-            ),
-            # BigDecimal converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, float),
-                converter=lambda obj: BigDecimal(str(obj)),
-                priority=Priority.NORMAL - 2,
-            ),
-            # Pandas table converter
-            Converter(
-                predicate=lambda obj: type(obj).__name__ == "DataFrame",
-                converter=_pandas_to_table,
-                priority=Priority.NORMAL + 1,
-            ),
-            # Mapping converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, collections.abc.Mapping),
-                converter=_convertMap,
-            ),
-            # Set converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, collections.abc.Set),
-                converter=_convertSet,
-            ),
-            # Iterable converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, collections.abc.Iterable),
-                converter=_convertIterable,
-                priority=Priority.NORMAL - 1,
-            ),
-        ]
-
-
-if not bridge_mode:
-    when_jvm_starts(
-        lambda: [_add_converter(c, java_converters) for c in _stock_java_converters()]
-    )
+    return [
+        # Other (Exceptional) converter
+        Converter(
+            predicate=lambda obj: True,
+            converter=_raise_type_exception,
+            priority=Priority.EXTREMELY_LOW - 1,
+        ),
+        # NoneType converter
+        Converter(
+            predicate=lambda obj: obj is None,
+            converter=lambda obj: None,
+            priority=Priority.EXTREMELY_HIGH + 1,
+        ),
+        # Java identity converter
+        Converter(
+            predicate=isjava,
+            converter=lambda obj: obj,
+            priority=Priority.EXTREMELY_HIGH,
+        ),
+        # String converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, str),
+            converter=lambda obj: String(obj.encode("utf-8"), "utf-8"),
+        ),
+        # Boolean converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, bool),
+            converter=Boolean,
+        ),
+        # Integer converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, int) and Integer.MAX_VALUE >= obj >= Integer.MIN_VALUE,
+            converter=Integer,
+        ),
+        # Long converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, int) and obj <= Long.MAX_VALUE,
+            converter=Long,
+            priority=Priority.NORMAL - 1,
+        ),
+        # BigInteger converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, int),
+            converter=lambda obj: BigInteger(str(obj)),
+            priority=Priority.NORMAL - 2,
+        ),
+        # Float converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, float) and Float.MAX_VALUE >= obj >= Float.MIN_VALUE,
+            converter=Float,
+        ),
+        # Double converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, float) and Double.MAX_VALUE >= obj >= Float.MIN_VALUE,
+            converter=Double,
+            priority=Priority.NORMAL - 1,
+        ),
+        # BigDecimal converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, float),
+            converter=lambda obj: BigDecimal(str(obj)),
+            priority=Priority.NORMAL - 2,
+        ),
+        # Pandas table converter
+        Converter(
+            predicate=lambda obj: type(obj).__name__ == "DataFrame",
+            converter=_pandas_to_table,
+            priority=Priority.NORMAL + 1,
+        ),
+        # Mapping converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, collections.abc.Mapping),
+            converter=_convertMap,
+        ),
+        # Set converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, collections.abc.Set),
+            converter=_convertSet,
+        ),
+        # Iterable converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, collections.abc.Iterable),
+            converter=_convertIterable,
+            priority=Priority.NORMAL - 1,
+        ),
+    ]
 
 
 # -- Java to Python --
@@ -648,7 +580,7 @@ class JavaObject:
     def __init__(self, jobj, intended_class=None):
         if intended_class is None:
             intended_class = Object
-        if not isinstance(jobj, intended_class):
+        if not jinstance(jobj, intended_class):
             raise TypeError(
                 "Not a " + intended_class.getName() + ": " + jclass(jobj).getName()
             )
@@ -831,14 +763,13 @@ def to_python(data: Any, gentle: bool = False) -> Any:
     :raises TypeError: if the argument is not one of the aforementioned types,
                        and the gentle flag is not set.
     """
-    if not bridge_mode:
-        start_jvm()
-        try:
-            return _convert(data, py_converters)
-        except TypeError as exc:
-            if gentle:
-                return data
-            raise exc
+    start_jvm()
+    try:
+        return _convert(data, py_converters)
+    except TypeError as exc:
+        if gentle:
+            return data
+        raise exc
 
 
 def _stock_py_converters() -> typing.List:
@@ -847,155 +778,164 @@ def _stock_py_converters() -> typing.List:
     This should only be called after the JVM has been started!
     :returns: A list of Converters
     """
-    if not bridge_mode:
-        return [
-            # Other (Exceptional) converter
-            Converter(
-                predicate=lambda obj: True,
-                converter=_raise_type_exception,
-                priority=Priority.EXTREMELY_LOW - 1,
-            ),
-            # Java identity converter
-            Converter(
-                predicate=lambda obj: not isjava(obj),
-                converter=lambda obj: obj,
-                priority=Priority.EXTREMELY_HIGH,
-            ),
-            # JBoolean converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, JBoolean),
-                converter=bool,
-                priority=Priority.NORMAL + 1,
-            ),
-            # JInt/JLong/JShort converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, (JInt, JLong, JShort)),
-                converter=int,
-                priority=Priority.NORMAL + 1,
-            ),
-            # JDouble/JFloat converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, (JDouble, JFloat)),
-                converter=float,
-                priority=Priority.NORMAL + 1,
-            ),
-            # JChar converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, JChar),
-                converter=str,
-                priority=Priority.NORMAL + 1,
-            ),
-            # Boolean converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Boolean),
-                converter=lambda obj: obj.booleanValue(),
-            ),
-            # Byte converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Byte),
-                converter=lambda obj: obj.byteValue(),
-            ),
-            # Char converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Character),
-                converter=lambda obj: obj.toString(),
-            ),
-            # Double converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Double),
-                converter=lambda obj: obj.doubleValue(),
-            ),
-            # Float converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Float),
-                converter=lambda obj: obj.floatValue(),
-            ),
-            # Integer converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Integer),
-                converter=lambda obj: obj.intValue(),
-            ),
-            # Long converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Long),
-                converter=lambda obj: obj.longValue(),
-            ),
-            # Short converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Short),
-                converter=lambda obj: obj.shortValue(),
-            ),
-            # Void converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Void),
-                converter=lambda obj: None,
-            ),
-            # String converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, String),
-                converter=lambda obj: str(obj),
-            ),
-            # BigInteger converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, BigInteger),
-                converter=lambda obj: int(str(obj.toString())),
-            ),
-            # BigDecimal converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, BigDecimal),
-                converter=lambda obj: float(obj.toString),
-            ),
-            # SciJava Table converter
-            Converter(
-                predicate=_is_table,
-                converter=_convert_table,
-            ),
-            # List converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, List),
-                converter=JavaList,
-            ),
-            # Map converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Map),
-                converter=JavaMap,
-            ),
-            # Set converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Set),
-                converter=JavaSet,
-            ),
-            # Collection converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Collection),
-                converter=JavaCollection,
-                priority=Priority.NORMAL - 1,
-            ),
-            # Iterable converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Iterable),
-                converter=JavaIterable,
-                priority=Priority.NORMAL - 1,
-            ),
-            # Iterator converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, Iterator),
-                converter=JavaIterator,
-                priority=Priority.NORMAL - 1,
-            ),
-            # JArray converter
-            Converter(
-                predicate=lambda obj: isinstance(obj, JArray),
-                converter=lambda obj: [to_python(o) for o in obj],
-                priority=Priority.VERY_LOW,
-            ),
-        ]
 
+    common_list = [
+        # Other (Exceptional) converter
+        Converter(
+            predicate=lambda obj: True,
+            converter=_raise_type_exception,
+            priority=Priority.EXTREMELY_LOW - 1,
+        ),
+        # Java identity converter
+        Converter(
+            predicate=lambda obj: not isjava(obj),
+            converter=lambda obj: obj,
+            priority=Priority.EXTREMELY_HIGH,
+        ),
+        # Boolean converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Boolean),
+            converter=lambda obj: obj.booleanValue(),
+        ),
+        # Byte converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Byte),
+            converter=lambda obj: obj.byteValue(),
+        ),
+        # Char converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Character),
+            converter=lambda obj: obj.toString(),
+        ),
+        # Double converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Double),
+            converter=lambda obj: obj.doubleValue(),
+        ),
+        # Float converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Float),
+            converter=lambda obj: obj.floatValue(),
+        ),
+        # Integer converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Integer),
+            converter=lambda obj: obj.intValue(),
+        ),
+        # Long converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Long),
+            converter=lambda obj: obj.longValue(),
+        ),
+        # Short converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Short),
+            converter=lambda obj: obj.shortValue(),
+        ),
+        # Void converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Void),
+            converter=lambda obj: None,
+        ),
+        # String converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, String),
+            converter=lambda obj: str(obj),
+        ),
+        # BigInteger converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, BigInteger),
+            converter=lambda obj: int(str(obj.toString())),
+        ),
+        # BigDecimal converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, BigDecimal),
+            converter=lambda obj: float(obj.toString),
+        ),
+        # SciJava Table converter
+        Converter(
+            predicate=_is_table,
+            converter=_convert_table,
+        ),
+        # List converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, List),
+            converter=JavaList,
+        ),
+        # Map converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Map),
+            converter=JavaMap,
+        ),
+        # Set converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Set),
+            converter=JavaSet,
+        ),
+        # Collection converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Collection),
+            converter=JavaCollection,
+            priority=Priority.NORMAL - 1,
+        ),
+        # Iterable converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Iterable),
+            converter=JavaIterable,
+            priority=Priority.NORMAL - 1,
+        ),
+        # Iterator converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, Iterator),
+            converter=JavaIterator,
+            priority=Priority.NORMAL - 1,
+        ),
+    ]
+    jpype_list = [
+        # JBoolean converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, JBoolean),
+            converter=bool,
+            priority=Priority.NORMAL + 1,
+        ),
+        # # JInt/JLong/JShort converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, (JInt, JLong, JShort)),
+            converter=int,
+            priority=Priority.NORMAL + 1,
+        ),
+        # # JDouble/JFloat converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, (JDouble, JFloat)),
+            converter=float,
+            priority=Priority.NORMAL + 1,
+        ),
+        # # JChar converter
+        Converter(
+            predicate=lambda obj: jinstance(obj, JChar),
+            converter=str,
+            priority=Priority.NORMAL + 1,
+        ),
+        # JArray converter
+        Converter(
+            predicate=lambda obj: isinstance(obj, JArray),
+            converter=lambda obj: [to_python(o) for o in obj],
+            priority=Priority.VERY_LOW,
+        ),
+    ]
+    jep_list = [
+        Converter(
+            predicate=lambda obj: jinstance(obj, jep.PyJArray),
+            converter=lambda obj: [to_python(o) for o in obj],
+            priority=Priority.NORMAL
+        )
+    ]
 
-if not bridge_mode:
-    when_jvm_starts(
-        lambda: [_add_converter(c, py_converters) for c in _stock_py_converters()]
-    )
+    if bridge_mode == JVMRunMode.JPype:
+        return common_list + jpype_list
+    elif bridge_mode == JVMRunMode.JEP:
+        # return common_list + jep_list
+        return common_list
 
 
 def _is_table(obj: Any) -> bool:
@@ -1068,3 +1008,83 @@ def _pandas_to_table(df):
             table.set(header, i, to_java(value))
 
     return table
+
+
+def _import_java_classes():
+    global Boolean
+    global Byte
+    global Character
+    global Double
+    global Float
+    global Integer
+    global Iterable
+    global Long
+    global Object
+    global Short
+    global String
+    global Void
+    global BigDecimal
+    global BigInteger
+    global ArrayList
+    global Collection
+    global Iterator
+    global LinkedHashMap
+    global LinkedHashSet
+    global List
+    global Map
+    global Set
+
+    _logger.debug('Importing Java classes...')
+
+    # grab needed Java classes
+    Boolean = jimport("java.lang.Boolean")
+    Byte = jimport("java.lang.Byte")
+    Character = jimport("java.lang.Character")
+    Double = jimport("java.lang.Double")
+    Float = jimport("java.lang.Float")
+    Integer = jimport("java.lang.Integer")
+    Iterable = jimport("java.lang.Iterable")
+    Long = jimport("java.lang.Long")
+    Object = jimport("java.lang.Object")
+    Short = jimport("java.lang.Short")
+    String = jimport("java.lang.String")
+    Void = jimport("java.lang.Void")
+    BigDecimal = jimport("java.math.BigDecimal")
+    BigInteger = jimport("java.math.BigInteger")
+    ArrayList = jimport("java.util.ArrayList")
+    Collection = jimport("java.util.Collection")
+    Iterator = jimport("java.util.Iterator")
+    LinkedHashMap = jimport("java.util.LinkedHashMap")
+    LinkedHashSet = jimport("java.util.LinkedHashSet")
+    List = jimport("java.util.List")
+    Map = jimport("java.util.Map")
+    Set = jimport("java.util.Set")
+
+
+def create_array(obj, length):
+    if bridge_mode == JVMRunMode.JPype:
+        start_jvm()
+        return JArray(obj)(length)
+    elif bridge_mode == JVMRunMode.JEP:
+        return ArrayList(length)
+
+
+# -- Bridge Mode --
+
+try:
+    import jep
+
+    bridge_mode = JVMRunMode.JEP
+    _import_java_classes()
+except ImportError:
+    bridge_mode = JVMRunMode.JPype
+
+# _logger.debug(bridge_mode)
+
+when_jvm_starts(
+    lambda: [_add_converter(c, java_converters) for c in _stock_java_converters()]
+)
+
+when_jvm_starts(
+    lambda: [_add_converter(c, py_converters) for c in _stock_py_converters()]
+)
