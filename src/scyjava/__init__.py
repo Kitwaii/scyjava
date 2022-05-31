@@ -34,6 +34,7 @@ class JVMRunMode(enum.Enum):
     JEP = 'JEP'
     JPype = 'JPype'
 
+
 # -- JVM setup --
 
 _startup_callbacks = []
@@ -357,12 +358,16 @@ def jclass(data):
     :returns: A java.lang.Class object, suitable for use with reflection.
     :raises TypeError: if the argument is not one of the aforementioned types.
     """
-    if isinstance(data, jpype.JClass):
-        return data.class_
-    if isinstance(data, _JObject):
-        return data.getClass()
-    if isinstance(data, str):
-        return jclass(jimport(data))
+    if bridge_mode == JVMRunMode.JPype:
+        if jinstance(data, jpype.JClass):
+            return data.class_
+        if jinstance(data, _JObject):
+            return data.getClass()
+        if jinstance(data, str):
+            return jclass(jimport(data))
+    else:
+        if jinstance(data.getClass(), Object):
+            return data.getClass()
 
     raise TypeError("Cannot glean class from data of type: " + str(type(data)))
 
@@ -779,6 +784,8 @@ def _stock_py_converters() -> typing.List:
     :returns: A list of Converters
     """
 
+    import jep
+
     common_list = [
         # Other (Exceptional) converter
         Converter(
@@ -1061,12 +1068,44 @@ def _import_java_classes():
     Set = jimport("java.util.Set")
 
 
-def create_array(obj, length):
-    if bridge_mode == JVMRunMode.JPype:
-        start_jvm()
-        return JArray(obj)(length)
-    elif bridge_mode == JVMRunMode.JEP:
-        return ArrayList(length)
+def new_jarray(kind, lengths):
+    if isinstance(kind, str):
+        kind = kind.lower()
+    if isinstance(lengths, int):
+        lengths = [lengths]
+    arraytype = kind
+
+    if bridge_mode == JVMRunMode.JEP:
+        # build up the array type
+        for _ in range(len(lengths) - 1):
+            arraytype = jep.jarray(0, arraytype)
+        # instantiate the n-dimensional array
+        arr = jep.jarray(lengths[0], arraytype)
+    elif bridge_mode == JVMRunMode.JPype:
+        # build up the array type
+        kinds = {
+            'b': JByte,
+            'c': JChar,
+            'd': JDouble,
+            'f': JFloat,
+            'i': JInt,
+            'j': JLong,
+            's': JShort,
+            'z': JBoolean,
+        }
+        if arraytype in kinds:
+            arraytype = kinds[arraytype]
+
+        for _ in range(len(lengths) - 1):
+            arraytype = JArray(arraytype)
+
+        # instantiate the n-dimensional array
+        arr = JArray(arraytype)(lengths[0])
+
+    if len(lengths) > 1:
+        for i in range(len(arr)):
+            arr[i] = new_jarray(kind, lengths[1:])
+    return arr
 
 
 # -- Bridge Mode --
