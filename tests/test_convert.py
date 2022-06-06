@@ -229,18 +229,22 @@ class TestConvert(unittest.TestCase):
                 "foo": "bar",
             }
         )
-        self.assertEqual("java.util.LinkedHashMap", jclass(jmap).getName())
+
+        if bridge_mode == JVMRunMode.JPype:
+            self.assertEqual("java.util.LinkedHashMap", jclass(jmap).getName())
+        else:
+            self.assertEqual("<class 'java.util.LinkedHashMap'>", str(jclass(jmap).__pytype__))
 
         # Convert it back to Python.
         pdict = to_python(jmap)
         l = pdict["list"]
         self.assertEqual(pdict["list"][0], "a")
-        assert type(pdict["list"][1]) == Object
+        assert type(pdict["list"][1]) == (Object if bridge_mode == JVMRunMode.JPype else Object.__pytype__)
         assert pdict["list"][2] == 1
         assert "x" in pdict["set"]
         assert 2 in pdict["set"]
         assert len(pdict["set"]) == 3
-        assert type(pdict["object"]) == Object
+        assert type(pdict["object"]) == (Object if bridge_mode == JVMRunMode.JPype else Object.__pytype__)
         self.assertEqual(pdict["foo"], "bar")
 
     def test_conversion_priority(self):

@@ -784,8 +784,6 @@ def _stock_py_converters() -> typing.List:
     :returns: A list of Converters
     """
 
-    import jep
-
     common_list = [
         # Other (Exceptional) converter
         Converter(
@@ -932,7 +930,7 @@ def _stock_py_converters() -> typing.List:
     ]
     jep_list = [
         Converter(
-            predicate=lambda obj: jinstance(obj, jep.PyJArray),
+            predicate=lambda obj: str(type(obj)) == "<class 'jep.PyJArray'>",
             converter=lambda obj: [to_python(o) for o in obj],
             priority=Priority.NORMAL
         )
@@ -941,8 +939,7 @@ def _stock_py_converters() -> typing.List:
     if bridge_mode == JVMRunMode.JPype:
         return common_list + jpype_list
     elif bridge_mode == JVMRunMode.JEP:
-        # return common_list + jep_list
-        return common_list
+        return common_list + jep_list
 
 
 def _is_table(obj: Any) -> bool:

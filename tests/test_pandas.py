@@ -2,7 +2,7 @@ import numpy as np
 import numpy.testing as npt
 import pandas as pd
 import unittest
-from scyjava import config, jimport, to_java
+from scyjava import config, jimport, to_java, bridge_mode, JVMRunMode
 
 config.endpoints.append("org.scijava:scijava-table")
 config.add_option("-Djava.awt.headless=true")
@@ -28,7 +28,10 @@ class TestPandas(unittest.TestCase):
         table = to_java(df)
 
         assert_same_table(table, df)
-        assert type(table) == jimport("org.scijava.table.DefaultFloatTable")
+        if bridge_mode == JVMRunMode.JPype:
+            assert type(table) == jimport("org.scijava.table.DefaultFloatTable")
+        else:
+            assert str(type(table)).replace('<', '').replace('>', '').replace("'", "") == str(jimport("org.scijava.table.DefaultFloatTable"))
 
         # Int table.
         columns = ["header1", "header2", "header3", "header4", "header5"]
@@ -39,7 +42,10 @@ class TestPandas(unittest.TestCase):
         table = to_java(df)
 
         assert_same_table(table, df)
-        assert type(table) == jimport("org.scijava.table.DefaultIntTable")
+        if bridge_mode == JVMRunMode.JPype:
+            assert type(table) == jimport("org.scijava.table.DefaultIntTable")
+        else:
+            assert str(type(table)).replace('<', '').replace('>', '').replace("'", "") == str(jimport("org.scijava.table.DefaultIntTable"))
 
         # Bool table.
         columns = ["header1", "header2", "header3", "header4", "header5"]
@@ -49,7 +55,10 @@ class TestPandas(unittest.TestCase):
         table = to_java(df)
 
         assert_same_table(table, df)
-        assert type(table) == jimport("org.scijava.table.DefaultBoolTable")
+        if bridge_mode == JVMRunMode.JPype:
+            assert type(table) == jimport("org.scijava.table.DefaultBoolTable")
+        else:
+            assert str(type(table)).replace('<', '').replace('>', '').replace("'", "") == str(jimport("org.scijava.table.DefaultBoolTable"))
 
         # Mixed table.
         columns = ["header1", "header2", "header3", "header4", "header5"]
@@ -68,7 +77,10 @@ class TestPandas(unittest.TestCase):
 
         # Table types cannot be the same here, unless we want to cast.
         # assert_same_table(table, df)
-        assert type(table) == jimport("org.scijava.table.DefaultGenericTable")
+        if bridge_mode == JVMRunMode.JPype:
+            assert type(table) == jimport("org.scijava.table.DefaultGenericTable")
+        else:
+            assert str(type(table)).replace('<', '').replace('>', '').replace("'", "") == str(jimport("org.scijava.table.DefaultGenericTable"))
 
 
 if __name__ == "__main__":
